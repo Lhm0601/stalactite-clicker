@@ -86,11 +86,12 @@ const THEMES = [
  {name:'水晶洞',   bg:'#0c0814', rock:'#1e1830', soil:'#181020', sky1:'#140a20', sky2:'#0a0618', water:'200,150,255',
   stal:['#6a5a9a','#c0b0e8'], mite:['#5a4a8a','#b0a0d8'], glow:'200,150,255', ambient:'crystals'},
 ];
-const PRESTIGE_MIN = 0.1;
+const PRESTIGE_BASE = 0.1;
 const DISPLAY_MAX = 0.5;
 
 function themeIdx(){ return S.prestige>=5?3 : S.prestige>=3?2 : S.prestige>=1?1 : 0; }
 function th(){ return THEMES[themeIdx()]; }
+function prestigeReq(){ return PRESTIGE_BASE * Math.pow(2, S.prestige); }
 
 /* ================= 派生数值 ================= */
 function count(id){ return S.owned[id]||0; }
@@ -108,7 +109,7 @@ function dps(){
 function cost(u){ return Math.ceil(u.base * Math.pow(u.mult, count(u.id))); }
 function totalLenMM(){ return S.total * 0.01; }
 function totalLenM(){ return totalLenMM() / 1000; }
-function ipGain(){ const m = totalLenM(); return m < PRESTIGE_MIN ? 0 : Math.floor(m * 10); }
+function ipGain(){ const m = totalLenM(), req = prestigeReq(); return m < req ? 0 : Math.floor((m - req*0.5) * 10); }
 function fmt(n){
   if (n < 1000) return Math.floor(n).toLocaleString();
   const units = ['K','M','B','T','Qa','Qi'];
@@ -169,14 +170,15 @@ function toast(msg){
   clearTimeout(toastTimer); toastTimer = setTimeout(()=>el.style.opacity=0, 3200);
 }
 function checkMilestones(){
-  const m = totalLenM();
+  const m = totalLenM(), scale = Math.pow(2, S.prestige);
   MILESTONES.forEach((ms,i)=>{
-    if (m >= ms.len && !S.seenMs.includes(i)){
+    const target = ms.len * scale;
+    if (m >= target && !S.seenMs.includes(i)){
       S.seenMs.push(i);
       toast(`🏆 里程碑：${ms.name} —— ${ms.desc}`);
     }
   });
-  const cur = [...MILESTONES].reverse().find(ms => m >= ms.len);
+  const cur = [...MILESTONES].reverse().find(ms => m >= ms.len * scale);
   $('milestone').style.display = cur ? 'block' : 'none';
   if (cur){ $('msName').textContent = '当前形态：' + cur.name; $('msDesc').textContent = cur.desc; }
 }
@@ -202,7 +204,7 @@ function refreshPanel(){
   const ip = ipGain();
   const btn = $('prestigeBtn');
   if (ip >= 1){ btn.disabled = false; btn.textContent = `⛏ 转生 → 获得 ${ip} 同位素点数`; }
-  else { btn.disabled = true; btn.textContent = `需要 ${PRESTIGE_MIN} m 累计生长（当前 ${lm.toFixed(3)} m）`; }
+  else { btn.disabled = true; btn.textContent = `需要 ${prestigeReq().toFixed(3)} m 累计生长（当前 ${lm.toFixed(3)} m）`; }
 }
 
 /* ================= 洞穴渲染 ================= */
