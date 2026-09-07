@@ -20,14 +20,21 @@
   .upg .desc{font-size:11px;color:var(--muted-foreground,#9aa7b4);margin:2px 0}
   .upg .cost{font-size:12px;color:#e8b450}
   .upg .owned{float:right;color:var(--muted-foreground,#9aa7b4)}
+  .upg.locked{border-style:dashed;opacity:.35}
   #milestone{border-color:#e8b450;background:rgba(232,180,80,.08)}
+  #prestigeCard{border-color:#7ec8e3;background:rgba(126,200,227,.08)}
+  #prestigeBtn{width:100%;margin-top:6px;padding:8px;border-radius:8px;border:1px solid #7ec8e3;
+       background:rgba(126,200,227,.15);color:#7ec8e3;cursor:pointer;font-size:14px;font-weight:600}
+  #prestigeBtn:disabled{opacity:.4;cursor:not-allowed;border-color:var(--border,#2c3138);color:var(--muted-foreground,#9aa7b4);background:var(--card,#1c2128)}
   #toast{position:fixed;top:14px;left:50%;transform:translateX(-50%);background:rgba(28,33,40,.95);
          border:1px solid #e8b450;color:#e6edf3;padding:8px 18px;border-radius:8px;font-size:13px;
-         opacity:0;transition:opacity .4s;pointer-events:none;white-space:nowrap}
+         opacity:0;transition:opacity .4s;pointer-events:none;white-space:nowrap;z-index:99}
   #hint{font-size:11px;color:var(--muted-foreground,#9aa7b4);margin-top:6px;text-align:center}
   .btnbar{margin-top:8px;display:flex;gap:8px}
   .btnbar button{flex:1;padding:4px;border-radius:6px;border:1px solid var(--border,#444c56);
        background:var(--card,#1c2128);color:var(--muted-foreground,#9aa7b4);cursor:pointer;font-size:12px}
+  #flash{position:fixed;top:0;left:0;width:100%;height:100%;background:#fff;opacity:0;
+         pointer-events:none;z-index:100;transition:opacity .6s}
 </style>
 </head>
 <body>
@@ -36,14 +43,21 @@
   <div class="stat"><div class="big" id="sCalcite">0</div><div class="small">方解石（CaCO₃）· 1 单位 = 0.01 mm 沉积</div></div>
   <div class="stat"><div id="sRate">+1 / 点击 · 0 / 秒</div><div class="small" id="sLen"></div></div>
   <div class="stat" id="milestone" style="display:none"><div class="name" style="font-weight:600;color:#e8b450" id="msName"></div><div class="small" id="msDesc"></div></div>
+  <div class="stat" id="prestigeCard">
+    <div style="font-weight:600;color:#7ec8e3">⛏ 地质纪元</div>
+    <div class="small" id="pInfo">同位素点数 0 · 产量 +0%</div>
+    <div class="small" id="pTheme">当前洞穴：溶洞</div>
+    <button id="prestigeBtn" disabled>需要 0.1 m 累计生长</button>
+  </div>
   <div id="upgs"></div>
-  <div id="hint">点击洞顶的水滴获得方解石 · 每 10 秒自动存档</div>
+  <div id="hint">点击洞穴任意处收集方解石 · 每 10 秒自动存档</div>
   <div class="btnbar"><button id="saveBtn">保存</button><button id="resetBtn">重开</button></div>
 </div>
 <div id="toast"></div>
+<div id="flash"></div>
 <script>
 /* ================= 状态 ================= */
-const DEF = {calcite:0, total:0, owned:{}, lastSave:Date.now(), seenMs:[]};
+const DEF = {calcite:0, total:0, owned:{}, lastSave:Date.now(), seenMs:[], prestige:0, iso:0};
 let S = JSON.parse(JSON.stringify(DEF));
 try{ const raw = localStorage.getItem('stalClicker'); if(raw) S = Object.assign(JSON.parse(JSON.stringify(DEF)), JSON.parse(raw)); }catch(e){}
 
@@ -52,29 +66,49 @@ const UPGRADES = [
  {id:'crack',  name:'裂隙拓宽',     desc:'岩层裂隙更通畅：+0.5 滴/秒',  base:50,   mult:1.18, click:0,  dps:0.5},
  {id:'soil',   name:'酸性土壤',     desc:'更多 CO₂ 溶解：点击 ×2',     base:300,  mult:1.25, clickMul:2},
  {id:'river',  name:'地下暗河',     desc:'源源不断的渗水：+10 滴/秒',   base:2000, mult:1.22, click:0,  dps:10},
- {id:'time',   name:'时间加速器',   desc:'地质时间压缩：全局产量 ×3（限购 5 次）', base:50000, mult:5, globalMul:3, max:5},
+ {id:'time',   name:'时间加速器',   desc:'地质时间压缩：全局产量 ×3（限购 5 次）', base:20000, mult:5, globalMul:3, max:5},
+ {id:'deep',   name:'深层岩溶',     desc:'深层地下水系：+100 滴/秒',    base:10000, mult:1.20, dps:100, reqPrestige:1},
+ {id:'geoth',  name:'地热温泉',     desc:'热水加速溶解：点击 ×5',       base:80000, mult:1.25, clickMul:5, reqPrestige:2},
 ];
 const MILESTONES = [
- {len:0.05, name:'鹅管',        desc:'中空的毛细管，一切的开始 —— 真实世界需要约 500 年'},
- {len:0.5,  name:'幼年石钟乳',  desc:'水滴沿外壁流下，开始加粗 —— 约 5,000 年'},
- {len:2.0,  name:'成熟石钟乳',  desc:'洞底的石笋也已冒头，相向而生 —— 约 2 万年'},
- {len:4.0,  name:'石柱',        desc:'二者相连！从水滴到石柱，约 5 万年。你用的时间短得多'},
+ {len:0.01, name:'鹅管',        desc:'中空的毛细管，一切的开始 —— 真实世界需要约 500 年'},
+ {len:0.05, name:'幼年石钟乳',  desc:'水滴沿外壁流下，开始加粗 —— 约 5,000 年'},
+ {len:0.1,  name:'成熟石钟乳',  desc:'洞底的石笋也已冒头，相向而生 —— 约 1 万年'},
+ {len:0.3,  name:'石柱',        desc:'二者相连！从水滴到石柱，你用的时间短得多'},
 ];
+const THEMES = [
+ {name:'溶洞',     bg:'#0b0f14', rock:'#33383f', soil:'#241f18', sky1:'#18222c', sky2:'#121a22', water:'126,200,227',
+  stal:['#8f6f3e','#e8d0a0'], mite:['#7d5a34','#d8b183'], glow:'232,180,80', ambient:'none'},
+ {name:'天坑',     bg:'#0a0d12', rock:'#2a3038', soil:'#1e1a14', sky1:'#1a2530', sky2:'#101820', water:'150,200,220',
+  stal:['#9a8050','#e8d8b0'], mite:['#856a40','#d0b890'], glow:'240,200,100', ambient:'beam'},
+ {name:'海底泉华', bg:'#080f14', rock:'#1e2e34', soil:'#1a2028', sky1:'#0a1820', sky2:'#061018', water:'100,220,200',
+  stal:['#5a8a7a','#b0d8c8'], mite:['#4a7a6a','#a0c8b8'], glow:'100,220,200', ambient:'bubbles'},
+ {name:'水晶洞',   bg:'#0c0814', rock:'#1e1830', soil:'#181020', sky1:'#140a20', sky2:'#0a0618', water:'200,150,255',
+  stal:['#6a5a9a','#c0b0e8'], mite:['#5a4a8a','#b0a0d8'], glow:'200,150,255', ambient:'crystals'},
+];
+const PRESTIGE_MIN = 0.1;
+const DISPLAY_MAX = 0.5;
+
+function themeIdx(){ return S.prestige>=5?3 : S.prestige>=3?2 : S.prestige>=1?1 : 0; }
+function th(){ return THEMES[themeIdx()]; }
 
 /* ================= 派生数值 ================= */
 function count(id){ return S.owned[id]||0; }
-function globalMul(){ return Math.pow(3, count('time')); }
+function ipMul(){ return 1 + S.iso * 0.10; }
+function globalMul(){ return Math.pow(3, count('time')) * ipMul(); }
 function clickPower(){
   let p = 1 + count('rain');
   p *= Math.pow(2, count('soil'));
+  p *= Math.pow(5, count('geoth'));
   return p * globalMul();
 }
 function dps(){
-  return (0.5*count('crack') + 10*count('river')) * globalMul();
+  return (0.5*count('crack') + 10*count('river') + 100*count('deep')) * globalMul();
 }
 function cost(u){ return Math.ceil(u.base * Math.pow(u.mult, count(u.id))); }
-function totalLenMM(){ return S.total * 0.01; }          // mm
-function totalLenM(){ return totalLenMM() / 1000; }       // m
+function totalLenMM(){ return S.total * 0.01; }
+function totalLenM(){ return totalLenMM() / 1000; }
+function ipGain(){ const m = totalLenM(); return m < PRESTIGE_MIN ? 0 : Math.floor(m * 10); }
 function fmt(n){
   if (n < 1000) return Math.floor(n).toLocaleString();
   const units = ['K','M','B','T','Qa','Qi'];
@@ -96,6 +130,19 @@ function save(){ S.lastSave = Date.now(); localStorage.setItem('stalClicker', JS
 setInterval(save, 10000);
 window.addEventListener('beforeunload', save);
 
+/* ================= 转生 ================= */
+function doPrestige(){
+  const ip = ipGain();
+  if (ip < 1) return;
+  S.iso += ip; S.prestige++;
+  S.calcite = 0; S.total = 0; S.owned = {}; S.seenMs = [];
+  L1s = 0; L2s = 0; fx.length = 0;
+  save();
+  toast(`⛏ 地质纪元 ${S.prestige}！获得 ${ip} 同位素点数（累计 ${S.iso} · 产量 +${(S.iso*0.1*100).toFixed(0)}%）`);
+  // 白闪过渡
+  const f = $('flash'); f.style.opacity = 0.8; setTimeout(()=>f.style.opacity=0, 80);
+}
+
 /* ================= UI ================= */
 const $ = id => document.getElementById(id);
 const upgBox = $('upgs');
@@ -104,6 +151,7 @@ UPGRADES.forEach(u=>{
   b.className = 'upg'; b.id = 'u_'+u.id;
   b.innerHTML = `<span class="owned" id="o_${u.id}"></span><div class="name">${u.name}</div><div class="desc">${u.desc}</div><div class="cost" id="c_${u.id}"></div>`;
   b.onclick = ()=>{
+    if (u.reqPrestige && S.prestige < u.reqPrestige) return;
     const c = cost(u);
     if (S.calcite < c) return;
     if (u.max && count(u.id) >= u.max) return;
@@ -113,11 +161,12 @@ UPGRADES.forEach(u=>{
   upgBox.appendChild(b);
 });
 $('saveBtn').onclick = ()=>{ save(); toast('已保存'); };
-$('resetBtn').onclick = ()=>{ if(confirm('确定要清空存档重来吗？')){ localStorage.removeItem('stalClicker'); location.reload(); } };
+$('resetBtn').onclick = ()=>{ if(confirm('确定要清空全部存档（含转生进度）重来吗？')){ localStorage.removeItem('stalClicker'); location.reload(); } };
+$('prestigeBtn').onclick = ()=>{ const ip = ipGain(); if (ip >= 1) doPrestige(); };
 let toastTimer;
 function toast(msg){
   const el = $('toast'); el.textContent = msg; el.style.opacity = 1;
-  clearTimeout(toastTimer); toastTimer = setTimeout(()=>el.style.opacity=0, 2600);
+  clearTimeout(toastTimer); toastTimer = setTimeout(()=>el.style.opacity=0, 3200);
 }
 function checkMilestones(){
   const m = totalLenM();
@@ -137,12 +186,23 @@ function refreshPanel(){
   const lm = totalLenM();
   $('sLen').textContent = `累计生长 ${lm < 1 ? (lm*1000).toFixed(1)+' mm' : lm.toFixed(3)+' m'} · 已沉积 ${fmt(S.total)}`;
   UPGRADES.forEach(u=>{
+    const locked = u.reqPrestige && S.prestige < u.reqPrestige;
     const c = cost(u), n = count(u.id), maxed = u.max && n >= u.max;
+    const el = $('u_'+u.id);
+    el.classList.toggle('locked', locked);
     $('o_'+u.id).textContent = maxed ? 'MAX' : '×'+n;
-    $('c_'+u.id).textContent = maxed ? '已达上限' : '花费 ' + fmt(c);
-    $('u_'+u.id).disabled = maxed || S.calcite < c;
+    if (locked){ $('c_'+u.id).textContent = `🔒 需转生 ${u.reqPrestige} 次`; el.disabled = true; }
+    else if (maxed){ $('c_'+u.id).textContent = '已达上限'; el.disabled = true; }
+    else { $('c_'+u.id).textContent = '花费 ' + fmt(c); el.disabled = S.calcite < c; }
   });
   checkMilestones();
+  // 转生面板
+  $('pInfo').textContent = `同位素点数 ${S.iso} · 产量 +${(S.iso*0.1*100).toFixed(0)}% · 转生 ${S.prestige} 次`;
+  $('pTheme').textContent = `当前洞穴：${th().name}`;
+  const ip = ipGain();
+  const btn = $('prestigeBtn');
+  if (ip >= 1){ btn.disabled = false; btn.textContent = `⛏ 转生 → 获得 ${ip} 同位素点数`; }
+  else { btn.disabled = true; btn.textContent = `需要 ${PRESTIGE_MIN} m 累计生长（当前 ${lm.toFixed(3)} m）`; }
 }
 
 /* ================= 洞穴渲染 ================= */
@@ -151,7 +211,6 @@ const W = 640, H = 640;
 const SKY_H = 30, SOIL_H = 22, ROCK_H = 100;
 const CAVE_Y = SKY_H + SOIL_H + ROCK_H, FLOOR_Y = 560, CX = W/2;
 const GAP = FLOOR_Y - CAVE_Y;
-const DISPLAY_MAX = 6;   // 6m 时视觉铺满
 const clamp01 = x => Math.max(0, Math.min(1, x));
 
 function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let r=Math.imul(a^a>>>15,1|a);r=r+Math.imul(r^r>>>7,61|r)^r;return((r^r>>>14)>>>0)/4294967296;};}
@@ -159,6 +218,8 @@ const rnd = mulberry32(42);
 const rockStrokes = []; for(let i=0;i<80;i++) rockStrokes.push({x:rnd()*W,y:CAVE_Y-ROCK_H+6+rnd()*(ROCK_H-14),l:10+rnd()*24,a:(rnd()-0.5)*0.9,dark:rnd()<0.5});
 const pebbles = []; for(let i=0;i<26;i++) pebbles.push({x:rnd()*W,y:FLOOR_Y+8+rnd()*(H-FLOOR_Y-16),r:2+rnd()*4});
 const rainSeeds = []; for(let i=0;i<10;i++) rainSeeds.push({x:rnd()*W,o:rnd()*SKY_H,s:70+rnd()*60});
+const crystals = []; for(let i=0;i<20;i++) crystals.push({x:rnd()*W,y:CAVE_Y+20+rnd()*(FLOOR_Y-CAVE_Y-40),s:4+rnd()*8,t:rnd()*7});
+const bubbles = []; for(let i=0;i<15;i++) bubbles.push({x:rnd()*W,o:rnd()*(FLOOR_Y-CAVE_Y),s:30+rnd()*40});
 function hash(n){ const x = Math.sin(n*127.1+311.7)*43758.5453; return x-Math.floor(x); }
 const crack = [[CX-30,SKY_H+SOIL_H+3],[CX-12,SKY_H+SOIL_H+32],[CX+8,SKY_H+SOIL_H+58],[CX-6,SKY_H+SOIL_H+82],[CX,CAVE_Y]];
 
@@ -179,15 +240,16 @@ function mitePath(cx, floor, h, w){
   ctx.closePath();
 }
 function fillFormation(which, len, w){
+  const T = th();
   const g = ctx.createLinearGradient(CX-w/2-4, 0, CX+w/2+4, 0);
-  if (which==='stal'){ g.addColorStop(0,'#8f6f3e'); g.addColorStop(0.5,'#e8d0a0'); g.addColorStop(1,'#8f6f3e'); stalPath(CX,CAVE_Y,len,w); }
-  else { g.addColorStop(0,'#7d5a34'); g.addColorStop(0.5,'#d8b183'); g.addColorStop(1,'#7d5a34'); mitePath(CX,FLOOR_Y,len,w); }
+  if (which==='stal'){ g.addColorStop(0,T.stal[0]); g.addColorStop(0.5,T.stal[1]); g.addColorStop(1,T.stal[0]); stalPath(CX,CAVE_Y,len,w); }
+  else { g.addColorStop(0,T.mite[0]); g.addColorStop(0.5,T.mite[1]); g.addColorStop(1,T.mite[0]); mitePath(CX,FLOOR_Y,len,w); }
   ctx.fillStyle = g; ctx.fill();
   ctx.strokeStyle = 'rgba(40,26,12,0.55)'; ctx.lineWidth = 1; ctx.stroke();
 }
 
 /* 点击特效 */
-const fx = [];   // {x,y,t0,type}
+const fx = [];
 cv.addEventListener('click', e=>{
   const r = cv.getBoundingClientRect();
   const x = (e.clientX-r.left)*(W/r.width), y = (e.clientY-r.top)*(H/r.height);
@@ -199,66 +261,101 @@ cv.addEventListener('click', e=>{
 });
 
 let L1s = 0, L2s = 0;
+function drawAmbient(tsec){
+  const T = th();
+  if (T.ambient === 'beam'){
+    // 天坑：光柱从顶部射入
+    const g = ctx.createLinearGradient(CX, SKY_H, CX, FLOOR_Y);
+    g.addColorStop(0, 'rgba(255,240,180,0.15)');
+    g.addColorStop(0.5, 'rgba(255,240,180,0.06)');
+    g.addColorStop(1, 'rgba(255,240,180,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.moveTo(CX-50, SKY_H); ctx.lineTo(CX+50, SKY_H);
+    ctx.lineTo(CX+90, FLOOR_Y); ctx.lineTo(CX-90, FLOOR_Y); ctx.closePath(); ctx.fill();
+  } else if (T.ambient === 'bubbles'){
+    // 海底泉华：上升气泡
+    for(const b of bubbles){
+      const y = FLOOR_Y - ((tsec*b.s + b.o) % (FLOOR_Y-CAVE_Y));
+      ctx.fillStyle = `rgba(${T.water},0.3)`;
+      ctx.beginPath(); ctx.arc(b.x + Math.sin(tsec*2+b.o)*8, y, 2+Math.sin(tsec*3+b.o)*1, 0, 7); ctx.fill();
+    }
+  } else if (T.ambient === 'crystals'){
+    // 水晶洞：墙上的水晶点闪烁
+    for(const c of crystals){
+      const flick = 0.4 + 0.4*Math.sin(tsec*1.5 + c.t);
+      ctx.fillStyle = `rgba(${T.water},${flick})`;
+      ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(c.t);
+      ctx.beginPath(); ctx.moveTo(0,-c.s); ctx.lineTo(c.s*0.4,0); ctx.lineTo(0,c.s); ctx.lineTo(-c.s*0.4,0); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+  }
+}
+
 function draw(now, tsec){
-  ctx.fillStyle = '#0b0f14'; ctx.fillRect(0,0,W,H);
+  const T = th();
+  ctx.fillStyle = T.bg; ctx.fillRect(0,0,W,H);
   // 天空/雨
   let g = ctx.createLinearGradient(0,0,0,SKY_H);
-  g.addColorStop(0,'#18222c'); g.addColorStop(1,'#121a22');
+  g.addColorStop(0, T.sky1); g.addColorStop(1, T.sky2);
   ctx.fillStyle = g; ctx.fillRect(0,0,W,SKY_H);
-  ctx.strokeStyle = 'rgba(126,200,227,0.5)'; ctx.lineWidth = 1;
+  ctx.strokeStyle = `rgba(${T.water},0.5)`; ctx.lineWidth = 1;
   for(const r of rainSeeds){ const y=(tsec*r.s+r.o*SKY_H)%(SKY_H+8)-4; ctx.beginPath(); ctx.moveTo(r.x,y); ctx.lineTo(r.x-2,y+6); ctx.stroke(); }
   // 土壤
-  ctx.fillStyle = '#241f18'; ctx.fillRect(0,SKY_H,W,SOIL_H);
+  ctx.fillStyle = T.soil; ctx.fillRect(0,SKY_H,W,SOIL_H);
   // 岩层
-  ctx.fillStyle = '#33383f'; ctx.fillRect(0,SKY_H+SOIL_H,W,ROCK_H);
+  ctx.fillStyle = T.rock; ctx.fillRect(0,SKY_H+SOIL_H,W,ROCK_H);
   for(const s of rockStrokes){ ctx.strokeStyle = s.dark?'rgba(0,0,0,0.25)':'rgba(255,255,255,0.06)'; ctx.lineWidth=1.2;
     ctx.beginPath(); ctx.moveTo(s.x,s.y); ctx.lineTo(s.x+Math.cos(s.a)*s.l, s.y+Math.sin(s.a)*s.l*0.3); ctx.stroke(); }
   // 裂隙
   ctx.strokeStyle = 'rgba(10,12,16,0.9)'; ctx.lineWidth = 2.5; ctx.lineJoin='round';
   ctx.beginPath(); crack.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])); ctx.stroke();
-  ctx.strokeStyle = 'rgba(126,200,227,0.3)'; ctx.lineWidth = 0.8;
+  ctx.strokeStyle = `rgba(${T.water},0.3)`; ctx.lineWidth = 0.8;
   ctx.beginPath(); crack.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])); ctx.stroke();
   // 洞底
-  ctx.fillStyle = '#262622'; ctx.fillRect(0,FLOOR_Y,W,H-FLOOR_Y);
-  ctx.fillStyle = '#1c1c19';
+  ctx.fillStyle = T.bg === '#080f14' ? '#0e1614' : T.bg === '#0c0814' ? '#100818' : '#262622';
+  ctx.fillRect(0,FLOOR_Y,W,H-FLOOR_Y);
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
   for(const p of pebbles){ ctx.beginPath(); ctx.ellipse(p.x,p.y,p.r,p.r*0.6,0,0,7); ctx.fill(); }
   ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.beginPath(); ctx.moveTo(0,FLOOR_Y+1); ctx.lineTo(W,FLOOR_Y+1); ctx.stroke();
   ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.beginPath(); ctx.moveTo(0,CAVE_Y+1); ctx.lineTo(W,CAVE_Y+1); ctx.stroke();
 
-  // 生长(平滑趋向目标长度)
+  // 环境特效(在 formations 后面绘制，让其穿透)
+  drawAmbient(tsec);
+
+  // 生长
   const target = visLens();
   L1s += (target.l1-L1s)*0.06; L2s += (target.l2-L2s)*0.06;
   const w1 = 6+26*clamp01(totalLenM()/DISPLAY_MAX), w2 = 10+40*clamp01(totalLenM()/DISPLAY_MAX);
   if (L1s > 1.5) fillFormation('stal', L1s, w1);
-  else { ctx.fillStyle = 'rgba(232,208,160,0.5)'; ctx.beginPath(); ctx.arc(CX, CAVE_Y+1, 2, 0, 7); ctx.fill(); }  // 萌芽点
+  else { ctx.fillStyle = `rgba(${T.glow},0.5)`; ctx.beginPath(); ctx.arc(CX, CAVE_Y+1, 2, 0, 7); ctx.fill(); }
   if (L2s > 1.5) fillFormation('mite', L2s, w2);
   const tipY = CAVE_Y+L1s, landY = FLOOR_Y-L2s;
   const joined = GAP-L1s-L2s < 4;
 
-  // 自动滴水可视化:按 dps 频率
+  // 自动滴水
   const rate = Math.max(dps(), 0.5);
   const P = Math.max(0.25, 2.2/Math.sqrt(rate));
   if (!joined && GAP-L1s-L2s > 16){
     const c = (tsec % P)/P, dripK = Math.floor(tsec/P);
     if (c < 0.5){
       const rr = 1.5+3.5*(c/0.5);
-      ctx.fillStyle = 'rgba(126,200,227,0.95)';
+      ctx.fillStyle = `rgba(${T.water},0.95)`;
       ctx.beginPath(); ctx.moveTo(CX-2,tipY); ctx.quadraticCurveTo(CX-rr,tipY+rr*0.9,CX,tipY+rr*1.6); ctx.quadraticCurveTo(CX+rr,tipY+rr*0.9,CX+2,tipY); ctx.fill();
     } else if (c < 0.8){
       const s=(c-0.5)/0.3, y=tipY+(landY-tipY-8)*s*s;
-      ctx.fillStyle = 'rgba(126,200,227,0.95)';
+      ctx.fillStyle = `rgba(${T.water},0.95)`;
       ctx.beginPath(); ctx.ellipse(CX,y,2.4,4,0,0,7); ctx.fill();
     } else if (c < 0.95){
       const q=(c-0.8)/0.15;
       for(let i=0;i<4;i++){ const h=hash(dripK*7+i);
-        ctx.fillStyle=`rgba(126,200,227,${0.8*(1-q)})`;
+        ctx.fillStyle=`rgba(${T.water},${0.8*(1-q)})`;
         ctx.beginPath(); ctx.arc(CX+(i-1.5)*(8+8*h)*q, landY-2-14*Math.sin(Math.PI*q)*(0.5+0.5*h),1.6,0,7); ctx.fill(); }
     }
   }
   if (joined){
     const gy = (CAVE_Y+FLOOR_Y)/2;
     const rg = ctx.createRadialGradient(CX,gy,2,CX,gy,80);
-    rg.addColorStop(0,'rgba(232,180,80,0.25)'); rg.addColorStop(1,'rgba(232,180,80,0)');
+    rg.addColorStop(0,`rgba(${T.glow},0.25)`); rg.addColorStop(1,`rgba(${T.glow},0)`);
     ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(CX,gy,80,0,7); ctx.fill();
   }
 
@@ -278,9 +375,10 @@ function draw(now, tsec){
 
   // 顶部 HUD
   ctx.fillStyle = '#e8b450'; ctx.font = 'bold 17px -apple-system,"PingFang SC",sans-serif'; ctx.textAlign='left';
+  const era = S.prestige > 0 ? ` · 第 ${S.prestige} 纪元` : '';
   ctx.fillText('⬇ 点击洞穴任意处收集方解石', 16, CAVE_Y+30);
   ctx.fillStyle = '#9aa7b4'; ctx.font = '11px -apple-system,"PingFang SC",sans-serif';
-  ctx.fillText('洞穴暗角里，一根石钟乳正在以万年为单位生长……', 16, CAVE_Y+48);
+  ctx.fillText(`「${T.name}」洞穴暗角里，石钟乳正在生长……${era}`, 16, CAVE_Y+48);
   const vg = ctx.createRadialGradient(W/2,(CAVE_Y+FLOOR_Y)/2,150,W/2,(CAVE_Y+FLOOR_Y)/2,520);
   vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,'rgba(0,0,0,0.45)');
   ctx.fillStyle = vg; ctx.fillRect(0,CAVE_Y,W,FLOOR_Y-CAVE_Y);
