@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>石钟乳工坊 · 增量游戏</title>
+<style>
+  *{box-sizing:border-box;margin:0}
+  body{display:flex;gap:14px;align-items:flex-start;font-family:-apple-system,"PingFang SC",sans-serif}
+  canvas{border-radius:10px;border:1px solid var(--border,#2c3138);cursor:pointer;display:block}
+  #panel{width:300px;max-height:640px;overflow-y:auto;padding-right:4px}
+  .stat{background:var(--card,#1c2128);border:1px solid var(--border,#2c3138);border-radius:8px;
+        padding:10px 12px;margin-bottom:8px;color:var(--foreground,#e6edf3)}
+  .stat .big{font-size:20px;font-weight:700;color:#e8b450}
+  .stat .small{font-size:12px;color:var(--muted-foreground,#9aa7b4);margin-top:2px}
+  .upg{width:100%;text-align:left;background:var(--card,#1c2128);border:1px solid var(--border,#2c3138);
+       border-radius:8px;padding:9px 12px;margin-bottom:6px;color:var(--foreground,#e6edf3);cursor:pointer;font-size:13px}
+  .upg:hover:not(:disabled){border-color:#e8b450}
+  .upg:disabled{opacity:.45;cursor:not-allowed}
+  .upg .name{font-weight:600}
+  .upg .desc{font-size:11px;color:var(--muted-foreground,#9aa7b4);margin:2px 0}
+  .upg .cost{font-size:12px;color:#e8b450}
+  .upg .owned{float:right;color:var(--muted-foreground,#9aa7b4)}
+  #milestone{border-color:#e8b450;background:rgba(232,180,80,.08)}
+  #toast{position:fixed;top:14px;left:50%;transform:translateX(-50%);background:rgba(28,33,40,.95);
+         border:1px solid #e8b450;color:#e6edf3;padding:8px 18px;border-radius:8px;font-size:13px;
+         opacity:0;transition:opacity .4s;pointer-events:none;white-space:nowrap}
+  #hint{font-size:11px;color:var(--muted-foreground,#9aa7b4);margin-top:6px;text-align:center}
+  .btnbar{margin-top:8px;display:flex;gap:8px}
+  .btnbar button{flex:1;padding:4px;border-radius:6px;border:1px solid var(--border,#444c56);
+       background:var(--card,#1c2128);color:var(--muted-foreground,#9aa7b4);cursor:pointer;font-size:12px}
+</style>
+</head>
+<body>
+<canvas id="cv" width="640" height="640"></canvas>
+<div id="panel">
+  <div class="stat"><div class="big" id="sCalcite">0</div><div class="small">方解石（CaCO₃）· 1 单位 = 0.01 mm 沉积</div></div>
+  <div class="stat"><div id="sRate">+1 / 点击 · 0 / 秒</div><div class="small" id="sLen"></div></div>
+  <div class="stat" id="milestone" style="display:none"><div class="name" style="font-weight:600;color:#e8b450" id="msName"></div><div class="small" id="msDesc"></div></div>
+  <div id="upgs"></div>
+  <div id="hint">点击洞顶的水滴获得方解石 · 每 10 秒自动存档</div>
+  <div class="btnbar"><button id="saveBtn">保存</button><button id="resetBtn">重开</button></div>
+</div>
+<div id="toast"></div>
+<script>
+/* ================= 状态 ================= */
+const DEF = {calcite:0, total:0, owned:{}, lastSave:Date.now(), seenMs:[]};
+let S = JSON.parse(JSON.stringify(DEF));
+try{ const raw = localStorage.getItem('stalClicker'); if(raw) S = Object.assign(JSON.parse(JSON.stringify(DEF)), JSON.parse(raw)); }catch(e){}
+
+const UPGRADES = [
+ {id:'rain',   name:'更湿的雨季',   desc:'每滴更饱满：点击 +1',        base:15,   mult:1.15, click:1,  dps:0},
+ {id:'crack',  name:'裂隙拓宽',     desc:'岩层裂隙更通畅：+0.5 滴/秒',  base:50,   mult:1.18, click:0,  dps:0.5},
+ {id:'soil',   name:'酸性土壤',     desc:'更多 CO₂ 溶解：点击 ×2',     base:300,  mult:1.25, clickMul:2},
+ {id:'river',  name:'地下暗河',     desc:'源源不断的渗水：+10 滴/秒',   base:2000, mult:1.22, click:0,  dps:10},
+ {id:'time',   name:'时间加速器',   desc:'地质时间压缩：全局产量 ×3（限购 5 次）', base:50000, mult:5, globalMul:3, max:5},
+];
+const MILESTONES = [
+ {len:0.05, name:'鹅管',        desc:'中空的毛细管，一切的开始 —— 真实世界需要约 500 年'},
+ {len:0.5,  name:'幼年石钟乳',  desc:'水滴沿外壁流下，开始加粗 —— 约 5,000 年'},
+ {len:2.0,  name:'成熟石钟乳',  desc:'洞底的石笋也已冒头，相向而生 —— 约 2 万年'},
+ {len:4.0,  name:'石柱',        desc:'二者相连！从水滴到石柱，约 5 万年。你用的时间短得多'},
+];
+
+/* ================= 派生数值 ================= */
+function count(id){ return S.owned[id]||0; }
+function globalMul(){ return Math.pow(3, count('time')); }
+function clickPower(){
+  let p = 1 + count('rain');
+  p *= Math.pow(2, count('soil'));
+  return p * globalMul();
+}
+function dps(){
+  return (0.5*count('crack') + 10*count('river')) * globalMul();
+}
+function cost(u){ return Math.ceil(u.base * Math.pow(u.mult, count(u.id))); }
+function totalLenMM(){ return S.total * 0.01; }          // mm
+function totalLenM(){ return totalLenMM() / 1000; }       // m
+function fmt(n){
+  if (n < 1000) return Math.floor(n).toLocaleString();
+  const units = ['K','M','B','T','Qa','Qi'];
+  let u = -1;
+  while (n >= 1000 && u < units.length-1){ n /= 1000; u++; }
+  return n.toFixed(n < 100 ? 2 : 1) + units[u];
+}
+
+/* ================= 存档 / 离线收益 ================= */
+function save(){ S.lastSave = Date.now(); localStorage.setItem('stalClicker', JSON.stringify(S)); }
+(function offline(){
+  const away = (Date.now() - S.lastSave) / 1000;
+  if (away > 60 && dps() > 0){
+    const gain = dps() * Math.min(away, 8*3600);
+    S.calcite += gain; S.total += gain;
+    setTimeout(()=>toast(`你离开了 ${(away/3600).toFixed(1)} 小时，洞穴滴出了 ${fmt(gain)} 方解石`), 600);
+  }
+})();
+setInterval(save, 10000);
+window.addEventListener('beforeunload', save);
+
+/* ================= UI ================= */
+const $ = id => document.getElementById(id);
+const upgBox = $('upgs');
+UPGRADES.forEach(u=>{
+  const b = document.createElement('button');
+  b.className = 'upg'; b.id = 'u_'+u.id;
+  b.innerHTML = `<span class="owned" id="o_${u.id}"></span><div class="name">${u.name}</div><div class="desc">${u.desc}</div><div class="cost" id="c_${u.id}"></div>`;
+  b.onclick = ()=>{
+    const c = cost(u);
+    if (S.calcite < c) return;
+    if (u.max && count(u.id) >= u.max) return;
+    S.calcite -= c; S.owned[u.id] = count(u.id)+1;
+    refreshPanel();
+  };
+  upgBox.appendChild(b);
+});
+$('saveBtn').onclick = ()=>{ save(); toast('已保存'); };
+$('resetBtn').onclick = ()=>{ if(confirm('确定要清空存档重来吗？')){ localStorage.removeItem('stalClicker'); location.reload(); } };
+let toastTimer;
+function toast(msg){
+  const el = $('toast'); el.textContent = msg; el.style.opacity = 1;
+  clearTimeout(toastTimer); toastTimer = setTimeout(()=>el.style.opacity=0, 2600);
+}
+function checkMilestones(){
+  const m = totalLenM();
+  MILESTONES.forEach((ms,i)=>{
+    if (m >= ms.len && !S.seenMs.includes(i)){
+      S.seenMs.push(i);
+      toast(`🏆 里程碑：${ms.name} —— ${ms.desc}`);
+    }
+  });
+  const cur = [...MILESTONES].reverse().find(ms => m >= ms.len);
+  $('milestone').style.display = cur ? 'block' : 'none';
+  if (cur){ $('msName').textContent = '当前形态：' + cur.name; $('msDesc').textContent = cur.desc; }
+}
+function refreshPanel(){
+  $('sCalcite').textContent = fmt(S.calcite);
+  $('sRate').textContent = `+${fmt(clickPower())} / 点击 · ${fmt(dps())} / 秒`;
+  const lm = totalLenM();
+  $('sLen').textContent = `累计生长 ${lm < 1 ? (lm*1000).toFixed(1)+' mm' : lm.toFixed(3)+' m'} · 已沉积 ${fmt(S.total)}`;
+  UPGRADES.forEach(u=>{
+    const c = cost(u), n = count(u.id), maxed = u.max && n >= u.max;
+    $('o_'+u.id).textContent = maxed ? 'MAX' : '×'+n;
+    $('c_'+u.id).textContent = maxed ? '已达上限' : '花费 ' + fmt(c);
+    $('u_'+u.id).disabled = maxed || S.calcite < c;
+  });
+  checkMilestones();
+}
+
+/* ================= 洞穴渲染 ================= */
+const cv = $('cv'), ctx = cv.getContext('2d');
+const W = 640, H = 640;
+const SKY_H = 30, SOIL_H = 22, ROCK_H = 100;
+const CAVE_Y = SKY_H + SOIL_H + ROCK_H, FLOOR_Y = 560, CX = W/2;
+const GAP = FLOOR_Y - CAVE_Y;
+const DISPLAY_MAX = 6;   // 6m 时视觉铺满
+const clamp01 = x => Math.max(0, Math.min(1, x));
+
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let r=Math.imul(a^a>>>15,1|a);r=r+Math.imul(r^r>>>7,61|r)^r;return((r^r>>>14)>>>0)/4294967296;};}
+const rnd = mulberry32(42);
+const rockStrokes = []; for(let i=0;i<80;i++) rockStrokes.push({x:rnd()*W,y:CAVE_Y-ROCK_H+6+rnd()*(ROCK_H-14),l:10+rnd()*24,a:(rnd()-0.5)*0.9,dark:rnd()<0.5});
+const pebbles = []; for(let i=0;i<26;i++) pebbles.push({x:rnd()*W,y:FLOOR_Y+8+rnd()*(H-FLOOR_Y-16),r:2+rnd()*4});
+const rainSeeds = []; for(let i=0;i<10;i++) rainSeeds.push({x:rnd()*W,o:rnd()*SKY_H,s:70+rnd()*60});
+function hash(n){ const x = Math.sin(n*127.1+311.7)*43758.5453; return x-Math.floor(x); }
+const crack = [[CX-30,SKY_H+SOIL_H+3],[CX-12,SKY_H+SOIL_H+32],[CX+8,SKY_H+SOIL_H+58],[CX-6,SKY_H+SOIL_H+82],[CX,CAVE_Y]];
+
+function visLens(){
+  const f = clamp01(totalLenM() / DISPLAY_MAX);
+  return {l1: f*GAP*0.55, l2: f*GAP*0.47};
+}
+function stalPath(cx, top, len, w){
+  ctx.beginPath();
+  for(let i=0;i<=24;i++){ const p=i/24,y=top+len*p,hw=(w/2)*Math.pow(1-p,0.75)*(1+0.1*Math.sin(p*8+1.3)); i?ctx.lineTo(cx-hw,y):ctx.moveTo(cx-hw,y); }
+  for(let i=24;i>=0;i--){ const p=i/24,y=top+len*p,hw=(w/2)*Math.pow(1-p,0.75)*(1+0.1*Math.sin(p*8+1.3)); ctx.lineTo(cx+hw,y); }
+  ctx.closePath();
+}
+function mitePath(cx, floor, h, w){
+  ctx.beginPath();
+  for(let i=0;i<=24;i++){ const p=i/24,y=floor-h*p,hw=(w/2)*Math.pow(Math.cos(p*Math.PI/2),0.8)*(1+0.08*Math.sin(p*7)); i?ctx.lineTo(cx-hw,y):ctx.moveTo(cx-hw,y); }
+  for(let i=24;i>=0;i--){ const p=i/24,y=floor-h*p,hw=(w/2)*Math.pow(Math.cos(p*Math.PI/2),0.8)*(1+0.08*Math.sin(p*7)); ctx.lineTo(cx+hw,y); }
+  ctx.closePath();
+}
+function fillFormation(which, len, w){
+  const g = ctx.createLinearGradient(CX-w/2-4, 0, CX+w/2+4, 0);
+  if (which==='stal'){ g.addColorStop(0,'#8f6f3e'); g.addColorStop(0.5,'#e8d0a0'); g.addColorStop(1,'#8f6f3e'); stalPath(CX,CAVE_Y,len,w); }
+  else { g.addColorStop(0,'#7d5a34'); g.addColorStop(0.5,'#d8b183'); g.addColorStop(1,'#7d5a34'); mitePath(CX,FLOOR_Y,len,w); }
+  ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = 'rgba(40,26,12,0.55)'; ctx.lineWidth = 1; ctx.stroke();
+}
+
+/* 点击特效 */
+const fx = [];   // {x,y,t0,type}
+cv.addEventListener('click', e=>{
+  const r = cv.getBoundingClientRect();
+  const x = (e.clientX-r.left)*(W/r.width), y = (e.clientY-r.top)*(H/r.height);
+  const gain = clickPower();
+  S.calcite += gain; S.total += gain;
+  fx.push({x, y, t0: performance.now(), type:'gain', txt:'+'+fmt(gain)});
+  fx.push({x: CX, y: CAVE_Y+L1s, t0: performance.now(), type:'ring'});
+  refreshPanel();
+});
+
+let L1s = 0, L2s = 0;
+function draw(now, tsec){
+  ctx.fillStyle = '#0b0f14'; ctx.fillRect(0,0,W,H);
+  // 天空/雨
+  let g = ctx.createLinearGradient(0,0,0,SKY_H);
+  g.addColorStop(0,'#18222c'); g.addColorStop(1,'#121a22');
+  ctx.fillStyle = g; ctx.fillRect(0,0,W,SKY_H);
+  ctx.strokeStyle = 'rgba(126,200,227,0.5)'; ctx.lineWidth = 1;
+  for(const r of rainSeeds){ const y=(tsec*r.s+r.o*SKY_H)%(SKY_H+8)-4; ctx.beginPath(); ctx.moveTo(r.x,y); ctx.lineTo(r.x-2,y+6); ctx.stroke(); }
+  // 土壤
+  ctx.fillStyle = '#241f18'; ctx.fillRect(0,SKY_H,W,SOIL_H);
+  // 岩层
+  ctx.fillStyle = '#33383f'; ctx.fillRect(0,SKY_H+SOIL_H,W,ROCK_H);
+  for(const s of rockStrokes){ ctx.strokeStyle = s.dark?'rgba(0,0,0,0.25)':'rgba(255,255,255,0.06)'; ctx.lineWidth=1.2;
+    ctx.beginPath(); ctx.moveTo(s.x,s.y); ctx.lineTo(s.x+Math.cos(s.a)*s.l, s.y+Math.sin(s.a)*s.l*0.3); ctx.stroke(); }
+  // 裂隙
+  ctx.strokeStyle = 'rgba(10,12,16,0.9)'; ctx.lineWidth = 2.5; ctx.lineJoin='round';
+  ctx.beginPath(); crack.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])); ctx.stroke();
+  ctx.strokeStyle = 'rgba(126,200,227,0.3)'; ctx.lineWidth = 0.8;
+  ctx.beginPath(); crack.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])); ctx.stroke();
+  // 洞底
+  ctx.fillStyle = '#262622'; ctx.fillRect(0,FLOOR_Y,W,H-FLOOR_Y);
+  ctx.fillStyle = '#1c1c19';
+  for(const p of pebbles){ ctx.beginPath(); ctx.ellipse(p.x,p.y,p.r,p.r*0.6,0,0,7); ctx.fill(); }
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.beginPath(); ctx.moveTo(0,FLOOR_Y+1); ctx.lineTo(W,FLOOR_Y+1); ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.beginPath(); ctx.moveTo(0,CAVE_Y+1); ctx.lineTo(W,CAVE_Y+1); ctx.stroke();
+
+  // 生长(平滑趋向目标长度)
+  const target = visLens();
+  L1s += (target.l1-L1s)*0.06; L2s += (target.l2-L2s)*0.06;
+  const w1 = 6+26*clamp01(totalLenM()/DISPLAY_MAX), w2 = 10+40*clamp01(totalLenM()/DISPLAY_MAX);
+  if (L1s > 1.5) fillFormation('stal', L1s, w1);
+  else { ctx.fillStyle = 'rgba(232,208,160,0.5)'; ctx.beginPath(); ctx.arc(CX, CAVE_Y+1, 2, 0, 7); ctx.fill(); }  // 萌芽点
+  if (L2s > 1.5) fillFormation('mite', L2s, w2);
+  const tipY = CAVE_Y+L1s, landY = FLOOR_Y-L2s;
+  const joined = GAP-L1s-L2s < 4;
+
+  // 自动滴水可视化:按 dps 频率
+  const rate = Math.max(dps(), 0.5);
+  const P = Math.max(0.25, 2.2/Math.sqrt(rate));
+  if (!joined && GAP-L1s-L2s > 16){
+    const c = (tsec % P)/P, dripK = Math.floor(tsec/P);
+    if (c < 0.5){
+      const rr = 1.5+3.5*(c/0.5);
+      ctx.fillStyle = 'rgba(126,200,227,0.95)';
+      ctx.beginPath(); ctx.moveTo(CX-2,tipY); ctx.quadraticCurveTo(CX-rr,tipY+rr*0.9,CX,tipY+rr*1.6); ctx.quadraticCurveTo(CX+rr,tipY+rr*0.9,CX+2,tipY); ctx.fill();
+    } else if (c < 0.8){
+      const s=(c-0.5)/0.3, y=tipY+(landY-tipY-8)*s*s;
+      ctx.fillStyle = 'rgba(126,200,227,0.95)';
+      ctx.beginPath(); ctx.ellipse(CX,y,2.4,4,0,0,7); ctx.fill();
+    } else if (c < 0.95){
+      const q=(c-0.8)/0.15;
+      for(let i=0;i<4;i++){ const h=hash(dripK*7+i);
+        ctx.fillStyle=`rgba(126,200,227,${0.8*(1-q)})`;
+        ctx.beginPath(); ctx.arc(CX+(i-1.5)*(8+8*h)*q, landY-2-14*Math.sin(Math.PI*q)*(0.5+0.5*h),1.6,0,7); ctx.fill(); }
+    }
+  }
+  if (joined){
+    const gy = (CAVE_Y+FLOOR_Y)/2;
+    const rg = ctx.createRadialGradient(CX,gy,2,CX,gy,80);
+    rg.addColorStop(0,'rgba(232,180,80,0.25)'); rg.addColorStop(1,'rgba(232,180,80,0)');
+    ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(CX,gy,80,0,7); ctx.fill();
+  }
+
+  // 点击特效
+  for (let i = fx.length-1; i >= 0; i--){
+    const f = fx[i], age = (now-f.t0)/1000;
+    if (age > 1){ fx.splice(i,1); continue; }
+    if (f.type === 'gain'){
+      ctx.fillStyle = `rgba(232,180,80,${1-age})`;
+      ctx.font = 'bold 15px -apple-system,"PingFang SC",sans-serif'; ctx.textAlign='center';
+      ctx.fillText(f.txt, f.x, f.y-30*age);
+    } else {
+      ctx.strokeStyle = `rgba(232,208,160,${0.7*(1-age)})`; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(f.x, f.y, 4+18*age, 0, 7); ctx.stroke();
+    }
+  }
+
+  // 顶部 HUD
+  ctx.fillStyle = '#e8b450'; ctx.font = 'bold 17px -apple-system,"PingFang SC",sans-serif'; ctx.textAlign='left';
+  ctx.fillText('⬇ 点击洞穴任意处收集方解石', 16, CAVE_Y+30);
+  ctx.fillStyle = '#9aa7b4'; ctx.font = '11px -apple-system,"PingFang SC",sans-serif';
+  ctx.fillText('洞穴暗角里，一根石钟乳正在以万年为单位生长……', 16, CAVE_Y+48);
+  const vg = ctx.createRadialGradient(W/2,(CAVE_Y+FLOOR_Y)/2,150,W/2,(CAVE_Y+FLOOR_Y)/2,520);
+  vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,'rgba(0,0,0,0.45)');
+  ctx.fillStyle = vg; ctx.fillRect(0,CAVE_Y,W,FLOOR_Y-CAVE_Y);
+}
+
+/* ================= 主循环 ================= */
+let last = performance.now();
+function frame(now){
+  const dt = Math.min((now-last)/1000, 0.1); last = now;
+  const gain = dps()*dt;
+  if (gain > 0){ S.calcite += gain; S.total += gain; }
+  draw(now, now/1000);
+  refreshPanel();
+  requestAnimationFrame(frame);
+}
+refreshPanel();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
