@@ -166,7 +166,7 @@ const EVENTS = [
  {id:'pearl',  name:'洞穴珍珠',   msg:'⚪ 洞底滚出一颗洞穴珍珠！+1 同位素点数',      w:10, dur:0,   bonus:{type:'iso', n:1}},
 ];
 let evt = null;         // {def, endsAt}
-let nextEvtAt = 90;     // 首个事件 90 秒后
+let nextEvtAt = 90 * 1000;   // 首个事件 90 秒后(单位:毫秒,与 performance.now 一致)
 function evtDpsMul(){ return (evt && evt.def.bonus.type==='dps') ? evt.def.bonus.mult : 1; }
 function tickEvents(now){
   if (evt && now >= evt.endsAt){ evt = null; }
